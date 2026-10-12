@@ -1,7 +1,6 @@
 """Client-owned material collection and an optional exact-origin application request."""
 
 import json
-import math
 import os
 import re
 from pathlib import Path
@@ -9,66 +8,7 @@ from urllib.parse import urlsplit
 
 from curl_cffi import CurlOpt
 from curl_cffi.requests import Session
-from rayon_sdk_py import Client
-
-PROFILE_FIELDS = {
-    "user_agent": str,
-    "platform": str,
-    "language": str,
-    "languages": list,
-    "screen": dict,
-    "window": dict,
-    "webgl": dict,
-    "canvas": dict,
-    "navigator": dict,
-}
-PROFILE_SECTIONS = {
-    "screen": dict.fromkeys(
-        ("width", "height", "availWidth", "availHeight", "colorDepth", "pixelDepth"),
-        int,
-    ),
-    "window": {
-        **dict.fromkeys(
-            (
-                "innerWidth",
-                "innerHeight",
-                "outerWidth",
-                "outerHeight",
-                "screenX",
-                "screenY",
-                "screenLeft",
-                "screenTop",
-                "pageXOffset",
-                "pageYOffset",
-            ),
-            int,
-        ),
-        "devicePixelRatio": (int, float),
-    },
-    "webgl": dict.fromkeys(("renderer", "vendor"), str),
-    "canvas": {"data_url": str},
-    "navigator": {
-        **dict.fromkeys(
-            (
-                "userAgent",
-                "platform",
-                "vendor",
-                "appVersion",
-                "appCodeName",
-                "appName",
-                "product",
-                "language",
-            ),
-            str,
-        ),
-        "languages": list,
-        "hardwareConcurrency": int,
-        "maxTouchPoints": int,
-        "webdriver": bool,
-        "cookieEnabled": bool,
-        "doNotTrack": (str, type(None)),
-    },
-}
+from rayon_sdk_py import Client, validate_profile as check_profile
 
 
 def https_origin(url):
@@ -116,73 +56,9 @@ def _invalid_constant(value):
 
 
 def validate_profile(profile):
-    def check(obj, schema):
-        if type(obj) is not dict or not obj.keys() <= schema.keys():
-            raise ValueError("Unsupported browser profile field")
-        for key, value in obj.items():
-            expected = schema[key] if isinstance(schema[key], tuple) else (schema[key],)
-            if type(value) not in expected:
-                raise ValueError("Invalid browser profile field type")
-            if isinstance(value, str) and key != "data_url" and len(value) > 8192:
-                raise ValueError("Browser profile string is too long")
-            if type(value) is float and not math.isfinite(value):
-                raise ValueError("Browser profile requires finite numbers")
-            if key == "languages" and (
-                not 1 <= len(value) <= 32
-                or any(type(item) is not str or len(item) > 8192 for item in value)
-            ):
-                raise ValueError("Invalid browser profile languages")
-
-    check(profile, PROFILE_FIELDS)
-    for key, schema in PROFILE_SECTIONS.items():
-        if key in profile:
-            check(profile[key], schema)
+    # Reuse the SDK contract; only target HTTP header requirements are additional.
+    profile = check_profile(profile)
     nav = profile.get("navigator", {})
-    for key, alias in [
-        ("user_agent", "userAgent"),
-        ("platform", "platform"),
-        ("language", "language"),
-        ("languages", "languages"),
-    ]:
-        if key in profile and alias in nav and profile[key] != nav[alias]:
-            raise ValueError("Conflicting browser profile aliases")
-    bounds = {
-        "screen": {
-            "width": (1, 32768),
-            "height": (1, 32768),
-            "availWidth": (0, 32768),
-            "availHeight": (0, 32768),
-            "colorDepth": (1, 64),
-            "pixelDepth": (1, 64),
-        },
-        "window": {
-            **dict.fromkeys(
-                ("innerWidth", "innerHeight", "outerWidth", "outerHeight"), (1, 32768)
-            ),
-            "devicePixelRatio": (0.1, 16),
-        },
-        "navigator": {"hardwareConcurrency": (1, 1024), "maxTouchPoints": (0, 100)},
-    }
-    for section, fields in bounds.items():
-        for key, (lo, hi) in fields.items():
-            if (
-                key in profile.get(section, {})
-                and not lo <= profile[section][key] <= hi
-            ):
-                raise ValueError("Browser profile value is outside supported bounds")
-    canvas = profile.get("canvas", {}).get("data_url")
-    if canvas is not None:
-        if not re.fullmatch(r"data:image/png;base64,[A-Za-z0-9+/]+={0,2}", canvas):
-            raise ValueError("Browser profile canvas must be a PNG data URL")
-    if (
-        len(
-            json.dumps(
-                profile, ensure_ascii=True, separators=(",", ":"), allow_nan=False
-            ).encode()
-        )
-        > 64 * 1024
-    ):
-        raise ValueError("Browser profile exceeds 64 KiB")
     user_agent = profile.get("user_agent") or nav.get("userAgent")
     if not user_agent or any(not 32 <= ord(c) <= 126 for c in user_agent):
         raise ValueError(

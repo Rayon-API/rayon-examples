@@ -235,3 +235,20 @@ def test_profile_language_cannot_inject_fetch_header(transport):
     with pytest.raises(ValueError):
         run(transport, profile={**PROFILE, "language": "en\r\nAuthorization: secret"})
     assert not transport["sessions"]
+
+
+def test_profile_preflight_uses_utf8_effective_limits_for_unicode():
+    from examples.common import validate_profile
+
+    profile = {
+        "user_agent": "Browser",
+        "navigator": {"vendor": "é" * 8192, "appName": "é" * 8192},
+    }
+    assert validate_profile(profile) == "Browser"
+
+
+def test_profile_preflight_rejects_out_of_range_coordinates():
+    from examples.common import validate_profile
+
+    with pytest.raises(ValueError):
+        validate_profile({"user_agent": "Browser", "window": {"screenX": 2147483648}})

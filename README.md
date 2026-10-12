@@ -13,14 +13,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The SDK's first PyPI release is being prepared. Until it is published, install the
-public source before the remaining dependencies:
-
-```bash
-pip install "git+https://github.com/Rayon-API/rayon-sdk-py.git"
-pip install "curl_cffi>=0.13,<1"
-```
-
 Set `RAYON_API_KEY` in your environment. Your account must have access to the
 requested domain. Do not commit API keys, generated headers or session cookies.
 
@@ -70,7 +62,7 @@ This example applies Secure conservatively and uses a disposable scoped session.
 ## Development
 
 ```bash
-pip install "git+https://github.com/Rayon-API/rayon-sdk-py.git" "pytest>=8,<10" "curl_cffi>=0.13,<1"
+pip install -r requirements.txt "pytest>=8,<10"
 pytest
 ```
 

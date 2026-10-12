@@ -12,5 +12,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install "git+https://github.com/Rayon-API/rayon-sdk-py.git" "pytest>=8,<10" "curl_cffi>=0.13,<1"
+      - run: pip install -r requirements.txt "pytest>=8,<10"
       - run: pytest

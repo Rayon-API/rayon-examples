@@ -1,0 +1,13 @@
+[project]
+name = "rayon-examples"
+version = "0.1.0"
+description = "Runnable RayonAPI SDK examples"
+requires-python = ">=3.10"
+dependencies = ["rayon-sdk-py>=0.1.0,<0.2", "curl_cffi>=0.13,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

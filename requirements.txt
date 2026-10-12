@@ -1,0 +1,2 @@
+rayon-sdk-py>=0.1.0,<0.2
+curl_cffi>=0.13,<1

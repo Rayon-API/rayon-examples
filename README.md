@@ -15,13 +15,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The requirements target `rayon-sdk-py>=1.0,<2`. Until SDK 1.0 is published to the
-package registry, use an approved local checkout of the SDK's 1.0 source:
-
-```bash
-pip install 'curl_cffi>=0.13,<1' 'pytest>=8,<10'
-export PYTHONPATH=/absolute/path/to/rayon-sdk-py/src
-```
+The requirements install the published `rayon-sdk-py>=1.0,<2` package.
 
 Set `RAYON_API_KEY` in your environment. Your account must have access to the
 requested target. Keep keys, profiles, downloaded protection source, generated
@@ -133,8 +127,8 @@ pip install -r requirements.txt 'pytest>=8,<10'
 pytest
 ```
 
-For the unpublished SDK source, use the local-checkout installation above and
-keep `PYTHONPATH` scoped to the test command if preferred. Tests use local doubles
+To test SDK changes locally, install its checkout with `pip install -e
+/absolute/path/to/rayon-sdk-py`. Tests use local doubles
 and the library cookie jar; they never call target websites or the RayonAPI
-service. See the [documentation](https://rayon-api.github.io/docs/) for the API
+service. See the [documentation](https://docs.rayonapi.com/) for the API
 contract and [MIT license](LICENSE) for the examples.

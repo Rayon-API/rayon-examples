@@ -86,7 +86,7 @@ def load_profile(path):
 
 
 def load_cookies(path):
-    """Load a Netscape export without flattening domain/path/secure/HttpOnly scope."""
+    """Load scoped Netscape HTTP cookies; do not infer JavaScript visibility."""
     jar = MozillaCookieJar(str(path))
     jar.load(ignore_discard=True, ignore_expires=True)
     # Browser/curl Netscape exports use zero for session-cookie expiry.
@@ -265,13 +265,28 @@ def generate_material(
                 raise ValueError(
                     "Material download failed or redirected; provide the final full HTTPS URL"
                 )
-            return response.content
+            return response
 
         fetch(source_url)
         scripts = []
         total = 0
         for url in script_urls:
-            source = fetch(url).decode("utf-8")
+            download = fetch(url)
+            source = download.content.decode("utf-8")
+            media_type = (
+                download.headers.get("Content-Type", "")
+                .split(";", 1)[0]
+                .strip()
+                .lower()
+            )
+            if media_type in {"text/html", "application/xhtml+xml"} or re.match(
+                r"\A[\s\ufeff]*(?:<!doctype\s+html\b|<(?:html|head|body|title|meta|script)\b|<\?xml\b)",
+                source,
+                re.IGNORECASE,
+            ):
+                raise ValueError(
+                    "Protection script download returned HTML; refresh the selected script material"
+                )
             size = len(source.encode("utf-8"))
             total += size
             if not source or size > 2 * 1024 * 1024 or total > 3 * 1024 * 1024:
@@ -290,9 +305,15 @@ def generate_material(
             result = client.generate(shape)
         response = None
         if send:
+            # The API omits canvas from profile_used; compare every reported supplied field.
+            reported_fields = {
+                name: value for name, value in profile.items() if name != "canvas"
+            }
             if validate_profile(
                 result.profile_used
-            ) != user_agent or not _same_supplied_fields(profile, result.profile_used):
+            ) != user_agent or not _same_supplied_fields(
+                reported_fields, result.profile_used
+            ):
                 raise ValueError(
                     "Returned browser profile differs from the measured target session profile"
                 )

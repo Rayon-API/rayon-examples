@@ -42,7 +42,9 @@ From the browser/client session you will use, save these files under `local/`:
   `user_agent` or `navigator.userAgent`, navigator, screen/window, WebGL, and canvas values.
   See [profiles and sessions](https://docs.rayonapi.com/profiles-and-sessions) for the schema.
 - `cookies.txt`: current cookies exported in Netscape format, preserving domain,
-  path, secure, expiry, and HttpOnly metadata. Omit `--cookies-file` for an empty session.
+  path, secure, and expiry scope. Omit `--cookies-file` for an empty session.
+  `curl_cffi` can lose imported HttpOnly metadata during its cookie conversion;
+  the HTTP jar must not be used to infer JavaScript cookie visibility.
 - `document-cookie.txt`: the current browser-visible `document.cookie` string,
   UTF-8 without a trailing newline. An empty file represents an empty string.
   This differs from the HTTP cookie jar: HttpOnly cookies are not browser-visible.
@@ -57,6 +59,8 @@ browser. A User-Agent string alone does not establish profile/TLS compatibility.
 Select the full script URLs from your integration, including loader and payload
 scripts where needed. Repeat `--script-url` in execution order. The example fetches
 exactly those URLs; it does not guess scripts or establish that your list is complete.
+Obvious HTML challenge responses are rejected as script material. An accepted MIME
+type or body does not prove that the selected JavaScript is complete.
 See [material preparation](https://docs.rayonapi.com/material).
 
 ## Collect, generate, and send
@@ -93,7 +97,9 @@ bodies are not printed.
 With `--send`, a single target session downloads the source page and all selected
 scripts, then sends the exact endpoint/method/body using `result.headers`. Its cookie
 jar, browser impersonation, User-Agent, and proxy remain consistent. The SDK uses a
-separate session for RayonAPI. Application requests must share the source page's exact
+separate session for RayonAPI. The API omits canvas from `profile_used`; the example
+compares the remaining supplied profile fields before sending, while still supplying
+your measured canvas input for generation. Application requests must share the source page's exact
 HTTPS origin by default. For an application API on another approved origin, add
 `--allow-request-origin https://api.shop.example.com` explicitly (repeat for each
 allowed origin). Script URLs may use a different HTTPS host. The shared cookie jar

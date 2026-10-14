@@ -386,3 +386,52 @@ def test_unlisted_application_origin_rejected_even_with_other_allowance(transpor
             allow_request_origins=["https://api.shop.example.com"],
         )
     assert not transport["sessions"]
+
+
+def test_response_profile_can_omit_canvas_and_expand_defaults(
+    transport, canvas_data_url
+):
+    supplied = {
+        **PROFILE,
+        "canvas": {"data_url": canvas_data_url},
+        "screen": {"width": 1600},
+    }
+    transport["profile_used"] = {
+        **PROFILE,
+        "screen": {"width": 1600, "height": 900},
+        "navigator": {"userAgent": PROFILE["user_agent"], "language": "en-US"},
+    }
+    run(transport, profile=supplied)
+    assert transport["sessions"][0].calls[-1][0] == "POST"
+    assert transport["shapes"][0]["profile"] == supplied
+
+
+@pytest.mark.parametrize(
+    "mime, source",
+    [
+        ("text/html; charset=UTF-8", "/* misleading non-HTML prefix */"),
+        ("application/xhtml+xml", "<html><body>challenge</body></html>"),
+        ("application/javascript", "\ufeff \n<!DOCTYPE HTML><html>challenge</html>"),
+        ("text/plain", " \r\n<html>challenge</html>"),
+        ("", "\ufeff\n<head><title>challenge</title></head>"),
+    ],
+    ids=["html-mime", "xhtml-mime", "doctype-bom", "html-body", "head-bom"],
+)
+def test_html_script_response_stops_before_api(transport, mime, source):
+    transport["response_headers"] = {"Content-Type": mime}
+    transport["source"] = source
+    with pytest.raises(ValueError, match="HTML"):
+        run(transport)
+    assert not transport["clients"] and not transport["shapes"]
+    assert transport["sessions"][0].closed
+
+
+@pytest.mark.parametrize(
+    "mime",
+    ["text/plain", "application/octet-stream", "", "text/javascript;charset=utf-8"],
+)
+def test_script_with_unusual_mime_preserves_full_source(transport, mime):
+    transport["response_headers"] = {"Content-Type": mime}
+    transport["source"] = "\ufeff\n/* owned JavaScript */\nconst example = 1;\n"
+    run(transport)
+    assert transport["shapes"][0]["scripts"][0]["source"] == transport["source"]

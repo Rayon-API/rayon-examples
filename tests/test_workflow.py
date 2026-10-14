@@ -149,7 +149,9 @@ def test_strict_header_file_rejects_duplicates(tmp_path):
         common.load_headers(path)
 
 
-def test_published_sdk_receives_complete_material_only_contract(transport, monkeypatch):
+def test_published_sdk_receives_complete_material_only_contract(
+    transport, monkeypatch, canvas_data_url
+):
     from types import SimpleNamespace
 
     from curl_cffi.requests import Session
@@ -167,7 +169,12 @@ def test_published_sdk_receives_complete_material_only_contract(transport, monke
             "headers": headers,
             "request_id": "req-example",
             "generation_ms": 1,
-            "profile_used": options["json"]["profile"],
+            "profile_used": {
+                "user_agent": "Owned browser",
+                "language": "en-GB",
+                "screen": {"width": 1600, "height": 900},
+                "navigator": {"userAgent": "Owned browser", "language": "en-GB"},
+            },
             "material_ref": "synthetic_reference_1234",
             "material_expires_at": "2030-01-01T00:00:00Z",
         }
@@ -178,7 +185,12 @@ def test_published_sdk_receives_complete_material_only_contract(transport, monke
     result, _ = common.generate_material(
         "https://shop.example.com/account",
         ["https://cdn.example/loader.js"],
-        {"user_agent": "Owned browser"},
+        {
+            "user_agent": "Owned browser",
+            "language": "en-GB",
+            "screen": {"width": 1600},
+            "canvas": {"data_url": canvas_data_url},
+        },
         {
             "url": "https://shop.example.com/api/check",
             "method": "POST",
@@ -203,6 +215,8 @@ def test_published_sdk_receives_complete_material_only_contract(transport, monke
     }
     assert options["json"]["scripts"][0]["source"].endswith("*/\n")
     assert options["json"]["document_cookie"] == "visible=current"
+    assert options["json"]["profile"]["canvas"]["data_url"] == canvas_data_url
+    assert "canvas" not in result.profile_used
     assert transport["sessions"][0].calls[-1][2]["data"] == b"exact\r\n"
     assert result.headers == headers
 
@@ -223,3 +237,52 @@ def test_cli_explicit_subdomain_allowance_and_proxy_keep_credentials_out_of_outp
     assert transport["sessions"][0].calls[-1][1] == "https://api.shop.example.com/check"
     output = capsys.readouterr().out
     assert "proxy-user" not in output and "proxy-value" not in output
+
+
+def test_real_curl_cookie_roundtrip_keeps_http_scope_and_separate_browser_snapshot(
+    tmp_path, transport, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from curl_cffi.requests import Cookies
+    from curl_cffi.requests.cookies import CurlMorsel
+
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+    path = tmp_path / "cookies.txt"
+    path.write_text(
+        "# Netscape HTTP Cookie File\n"
+        "#HttpOnly_shop.example.com\tFALSE\t/api\tTRUE\t0\tlogin\tcurrent\n"
+    )
+    cookies = Cookies(common.load_cookies(path))
+    assert next(iter(cookies.jar)).has_nonstandard_attr("HTTPOnly")
+    morsels = cookies.get_cookies_for_curl(
+        SimpleNamespace(url="https://shop.example.com/account")
+    )
+    returned = [
+        CurlMorsel.from_curl_format(morsel.to_curl_format().encode())
+        for morsel in morsels
+    ]
+    cookies.update_cookies_from_curl(returned)
+    cookie = next(iter(cookies.jar))
+    assert cookie.domain == "shop.example.com" and cookie.path == "/api"
+    assert cookie.secure and not cookie.domain_specified
+    # Current curl_cffi conversion loses Netscape HttpOnly; HTTP scope remains useful.
+    assert not cookie.has_nonstandard_attr("HTTPOnly")
+    common.generate_material(
+        "https://shop.example.com/account",
+        ["https://cdn.example/loader.js"],
+        {"user_agent": "Owned browser"},
+        {
+            "url": "https://shop.example.com/api/check",
+            "method": "POST",
+            "content_type": "text/plain",
+            "body": "exact",
+        },
+        {},
+        cookies=cookies.jar,
+        document_cookie="visible=current",
+        send=True,
+        **factories(transport),
+    )
+    assert transport["shapes"][0]["document_cookie"] == "visible=current"
+    assert "login" not in transport["shapes"][0]["document_cookie"]

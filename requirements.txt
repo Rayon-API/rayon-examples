@@ -1,2 +1,2 @@
-rayon-sdk-py>=1.0,<2
+rayon-sdk-py>=1.0.2,<2
 curl_cffi>=0.13,<1

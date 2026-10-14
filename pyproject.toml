@@ -3,7 +3,7 @@ name = "rayon-examples"
 version = "1.0.0"
 description = "Runnable RayonAPI SDK examples"
 requires-python = ">=3.10"
-dependencies = ["rayon-sdk-py>=1.0,<2", "curl_cffi>=0.13,<1"]
+dependencies = ["rayon-sdk-py>=1.0.2,<2", "curl_cffi>=0.13,<1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]

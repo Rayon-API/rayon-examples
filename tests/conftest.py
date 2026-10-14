@@ -22,7 +22,7 @@ def transport():
         def __init__(self, **options):
             self.options = options
             self.calls = []
-            self.cookies = Cookies()
+            self.cookies = Cookies(options.get("cookies"))
             self.closed = False
             state["sessions"].append(self)
 
@@ -42,13 +42,17 @@ def transport():
                 self.cookies.set(
                     "session",
                     "fresh",
-                    domain="www.southwest.com",
+                    domain="shop.example.com",
                     path="/api",
                     secure=True,
                 )
             return SimpleNamespace(
                 status_code=state.get("status", 200),
-                text="/* full source: " + url + " */\n",
+                text=state.get("source", "/* full source: " + url + " */\n"),
+                content=state.get("contents", {}).get(
+                    url,
+                    state.get("source", "/* full source: " + url + " */\n").encode(),
+                ),
             )
 
     class Client:

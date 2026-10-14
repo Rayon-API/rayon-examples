@@ -174,6 +174,7 @@ def test_generated_headers_cannot_replace_application_credentials(transport):
 def test_target_cookie_jar_keeps_host_path_secure_and_httponly_scoping():
     from http.cookiejar import Cookie
     from urllib.request import Request
+
     from curl_cffi.requests import Cookies
 
     cookies = Cookies()
@@ -252,3 +253,185 @@ def test_profile_preflight_rejects_out_of_range_coordinates():
 
     with pytest.raises(ValueError):
         validate_profile({"user_agent": "Browser", "window": {"screenX": 2147483648}})
+
+
+def test_current_document_cookie_is_supplied_as_material(transport):
+    run(transport, document_cookie="visible=current")
+    assert transport["shapes"][0]["document_cookie"] == "visible=current"
+    assert not any(
+        "Cookie" in call[2]["headers"] for call in transport["sessions"][0].calls
+    )
+
+
+@pytest.mark.parametrize(
+    "cookie",
+    ["bad\nvalue", "bad\x00value", "x" * 16385],
+    ids=["newline", "null", "oversized"],
+)
+def test_document_cookie_validation_precedes_network(transport, cookie):
+    with pytest.raises(ValueError):
+        run(transport, document_cookie=cookie)
+    assert not transport["sessions"]
+
+
+@pytest.mark.parametrize(
+    "body, content_type, method",
+    [
+        ("body", None, "POST"),
+        ("body", "text/plain", "GET"),
+        ("body", "multipart/form-data", "POST"),
+        ("body", "application/json\r\nInjected: true", "POST"),
+    ],
+)
+def test_invalid_context_precedes_material_network(
+    transport, body, content_type, method
+):
+    with pytest.raises(ValueError):
+        run(
+            transport,
+            request={
+                **REQUEST,
+                "body": body,
+                "content_type": content_type,
+                "method": method,
+            },
+        )
+    assert not transport["sessions"]
+
+
+@pytest.mark.parametrize(
+    "source", ["", "x" * (2 * 1024 * 1024 + 1)], ids=["empty", "oversized"]
+)
+def test_empty_or_oversized_script_stops_before_api(transport, source):
+    transport["source"] = source
+    with pytest.raises(ValueError):
+        run(transport)
+    assert not transport["clients"]
+    assert transport["sessions"][0].closed
+
+
+def test_changed_measured_profile_stops_send(transport):
+    transport["profile_used"] = {**PROFILE, "screen": {"width": 800}}
+    with pytest.raises(ValueError, match="profile"):
+        run(transport, profile={**PROFILE, "screen": {"width": 1600}})
+    assert all(call[0] == "GET" for call in transport["sessions"][0].calls)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Cookie": "flattened=wrong"},
+        {"User-Agent": "wrong"},
+        {"Authorization": "bad\nvalue"},
+    ],
+)
+def test_unsafe_application_headers_rejected_before_network(transport, headers):
+    with pytest.raises(ValueError):
+        run(transport, application_headers=headers)
+    assert not transport["sessions"]
+
+
+def test_source_page_encoding_does_not_change_script_material(transport):
+    transport["contents"] = {SOURCE: b"<p>\xe9</p>"}
+    run(transport)
+    assert transport["shapes"][0]["scripts"][0]["source"].endswith("*/\n")
+
+
+def test_invalid_script_utf8_stops_before_generation(transport):
+    transport["contents"] = {"https://cdn.example/selected.js": b"\xff"}
+    with pytest.raises(UnicodeError):
+        run(transport)
+    assert not transport["clients"]
+
+
+def test_explicit_application_origin_allows_subdomain_without_forwarding_headers(
+    transport,
+):
+    endpoint = "https://api.shop.example.com/check"
+    run(
+        transport,
+        request={**REQUEST, "url": endpoint},
+        allow_request_origins=["https://api.shop.example.com"],
+    )
+    calls = transport["sessions"][0].calls
+    assert calls[-1][1] == endpoint
+    assert transport["shapes"][0]["request"]["url"] == endpoint
+    assert all("x-api-key" not in options["headers"] for _, _, options in calls[:-1])
+    assert calls[-1][2]["headers"]["x-api-key"] == "app-key"
+    assert not any("Cookie" in options["headers"] for _, _, options in calls)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://api.shop.example.com",
+        "https://api.shop.example.com/path",
+        "https://api.shop.example.com?query",
+        "https://user:password@api.shop.example.com",
+    ],
+)
+def test_allow_request_origin_requires_exact_https_origin_before_network(
+    transport, origin
+):
+    with pytest.raises(ValueError):
+        run(transport, allow_request_origins=[origin])
+    assert not transport["sessions"]
+
+
+def test_unlisted_application_origin_rejected_even_with_other_allowance(transport):
+    with pytest.raises(ValueError):
+        run(
+            transport,
+            request={**REQUEST, "url": "https://other.shop.example.com/check"},
+            allow_request_origins=["https://api.shop.example.com"],
+        )
+    assert not transport["sessions"]
+
+
+def test_response_profile_can_omit_canvas_and_expand_defaults(
+    transport, canvas_data_url
+):
+    supplied = {
+        **PROFILE,
+        "canvas": {"data_url": canvas_data_url},
+        "screen": {"width": 1600},
+    }
+    transport["profile_used"] = {
+        **PROFILE,
+        "screen": {"width": 1600, "height": 900},
+        "navigator": {"userAgent": PROFILE["user_agent"], "language": "en-US"},
+    }
+    run(transport, profile=supplied)
+    assert transport["sessions"][0].calls[-1][0] == "POST"
+    assert transport["shapes"][0]["profile"] == supplied
+
+
+@pytest.mark.parametrize(
+    "mime, source",
+    [
+        ("text/html; charset=UTF-8", "/* misleading non-HTML prefix */"),
+        ("application/xhtml+xml", "<html><body>challenge</body></html>"),
+        ("application/javascript", "\ufeff \n<!DOCTYPE HTML><html>challenge</html>"),
+        ("text/plain", " \r\n<html>challenge</html>"),
+        ("", "\ufeff\n<head><title>challenge</title></head>"),
+    ],
+    ids=["html-mime", "xhtml-mime", "doctype-bom", "html-body", "head-bom"],
+)
+def test_html_script_response_stops_before_api(transport, mime, source):
+    transport["response_headers"] = {"Content-Type": mime}
+    transport["source"] = source
+    with pytest.raises(ValueError, match="HTML"):
+        run(transport)
+    assert not transport["clients"] and not transport["shapes"]
+    assert transport["sessions"][0].closed
+
+
+@pytest.mark.parametrize(
+    "mime",
+    ["text/plain", "application/octet-stream", "", "text/javascript;charset=utf-8"],
+)
+def test_script_with_unusual_mime_preserves_full_source(transport, mime):
+    transport["response_headers"] = {"Content-Type": mime}
+    transport["source"] = "\ufeff\n/* owned JavaScript */\nconst example = 1;\n"
+    run(transport)
+    assert transport["shapes"][0]["scripts"][0]["source"] == transport["source"]

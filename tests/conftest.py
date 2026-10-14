@@ -1,8 +1,28 @@
+import base64
 import json
+import struct
+import zlib
 from types import SimpleNamespace
 
 import pytest
 from curl_cffi.requests import Cookies
+
+
+@pytest.fixture
+def canvas_data_url():
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    png = b"\x89PNG\r\n\x1a\n" + chunk(
+        b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    )
+    png += chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00\xff")) + chunk(b"IEND", b"")
+    return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
 @pytest.fixture
@@ -22,7 +42,7 @@ def transport():
         def __init__(self, **options):
             self.options = options
             self.calls = []
-            self.cookies = Cookies()
+            self.cookies = Cookies(options.get("cookies"))
             self.closed = False
             state["sessions"].append(self)
 
@@ -42,13 +62,18 @@ def transport():
                 self.cookies.set(
                     "session",
                     "fresh",
-                    domain="www.southwest.com",
+                    domain="shop.example.com",
                     path="/api",
                     secure=True,
                 )
             return SimpleNamespace(
                 status_code=state.get("status", 200),
-                text="/* full source: " + url + " */\n",
+                headers=state.get("response_headers", {}),
+                text=state.get("source", "/* full source: " + url + " */\n"),
+                content=state.get("contents", {}).get(
+                    url,
+                    state.get("source", "/* full source: " + url + " */\n").encode(),
+                ),
             )
 
     class Client:

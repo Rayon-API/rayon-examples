@@ -1,0 +1,406 @@
+import json
+
+import pytest
+
+from examples import common
+
+
+def inputs(tmp_path, profile_file):
+    body = tmp_path / "body.txt"
+    body.write_bytes(' {"name":"é"}\r\n'.encode())
+    cookie = tmp_path / "document-cookie.txt"
+    cookie.write_bytes(b"visible=current")
+    headers = tmp_path / "headers.json"
+    headers.write_text('{"Authorization":"Bearer application-value"}')
+    return [
+        "--source-url",
+        "https://shop.example.com/account",
+        "--request-url",
+        "https://shop.example.com/api/check",
+        "--method",
+        "POST",
+        "--content-type",
+        "application/json",
+        "--body-file",
+        str(body),
+        "--profile",
+        str(profile_file),
+        "--script-url",
+        "https://shop.example.com/loader.js",
+        "--script-url",
+        "https://cdn.example/payload.js",
+        "--document-cookie-file",
+        str(cookie),
+        "--headers-file",
+        str(headers),
+        "--impersonate",
+        "chrome",
+    ]
+
+
+def test_default_validates_offline_without_api_key(
+    tmp_path, profile_file, transport, capsys, monkeypatch
+):
+    from examples import request_workflow
+
+    monkeypatch.delenv("RAYON_API_KEY", raising=False)
+    request_workflow.main(inputs(tmp_path, profile_file), **factories(transport))
+    assert not transport["sessions"] and not transport["clients"]
+    assert "offline" in capsys.readouterr().out
+
+
+def factories(transport):
+    return {name: transport[name] for name in ("session_factory", "client_factory")}
+
+
+@pytest.mark.parametrize("mode, count", [("--fetch-and-generate", 3), ("--send", 4)])
+def test_live_modes_preserve_order_body_and_hide_secrets(
+    tmp_path, profile_file, transport, capsys, monkeypatch, mode, count
+):
+    from examples import request_workflow
+
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+    request_workflow.main(
+        inputs(tmp_path, profile_file) + [mode], **factories(transport)
+    )
+    session = transport["sessions"][0]
+    assert len(session.calls) == count
+    shape = transport["shapes"][0]
+    assert [item["url"] for item in shape["scripts"]] == [
+        "https://shop.example.com/loader.js",
+        "https://cdn.example/payload.js",
+    ]
+    assert shape["document_cookie"] == "visible=current"
+    assert shape["request"]["body"] == ' {"name":"é"}\r\n'
+    if mode == "--send":
+        assert session.calls[-1][2]["data"] == shape["request"]["body"].encode()
+        assert (
+            session.calls[-1][2]["headers"]["Authorization"]
+            == "Bearer application-value"
+        )
+    assert all(
+        "Authorization" not in options["headers"] for _, _, options in session.calls[:3]
+    )
+    output = capsys.readouterr().out
+    assert all(
+        secret not in output
+        for secret in ("application-value", "visible=current", "generated", "rayon-key")
+    )
+    assert len(transport["sessions"]) == len(transport["clients"]) == 1
+
+
+def test_missing_api_key_precedes_network(
+    tmp_path, profile_file, transport, monkeypatch
+):
+    from examples import request_workflow
+
+    monkeypatch.delenv("RAYON_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="RAYON_API_KEY"):
+        request_workflow.main(
+            inputs(tmp_path, profile_file) + ["--send"], **factories(transport)
+        )
+    assert not transport["sessions"]
+
+
+def test_cookie_file_retains_scope_and_http_only_metadata(
+    tmp_path, transport, monkeypatch
+):
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+    path = tmp_path / "cookies.txt"
+    path.write_text(
+        "# Netscape HTTP Cookie File\n"
+        "#HttpOnly_shop.example.com\tFALSE\t/api\tTRUE\t0\tlogin\tcurrent\n"
+        ".example.com\tTRUE\t/\tTRUE\t0\tvisible\tcurrent\n"
+        "shop.example.com\tFALSE\t/\tTRUE\t1\texpired\told\n"
+    )
+    jar = common.load_cookies(path)
+    assert {cookie.name for cookie in jar} == {"login", "visible"}
+    common.generate_material(
+        "https://shop.example.com/account",
+        ["https://cdn.example/script.js"],
+        {"user_agent": "Owned browser"},
+        {
+            "url": "https://shop.example.com/api/check",
+            "method": "POST",
+            "content_type": "text/plain",
+            "body": "",
+        },
+        {},
+        cookies=jar,
+        document_cookie="visible=current",
+        send=True,
+        **factories(transport),
+    )
+    imported = next(
+        cookie
+        for cookie in transport["sessions"][0].cookies.jar
+        if cookie.name == "login"
+    )
+    assert imported.has_nonstandard_attr("HTTPOnly")
+    assert imported.domain == "shop.example.com" and imported.path == "/api"
+    assert not imported.domain_specified and imported.secure
+    assert imported.expires is None and imported.discard
+
+
+def test_strict_header_file_rejects_duplicates(tmp_path):
+    path = tmp_path / "headers.json"
+    path.write_text('{"Accept":"one","Accept":"two"}')
+    with pytest.raises(ValueError):
+        common.load_headers(path)
+
+
+def test_published_sdk_receives_complete_material_only_contract(
+    transport, monkeypatch, canvas_data_url
+):
+    from types import SimpleNamespace
+
+    from curl_cffi.requests import Session
+    from rayon_sdk_py import Client, __version__
+
+    assert __version__.split(".")[0] == "1"
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+    api_calls = []
+    headers = {f"X-Example-{suffix}": "sample" for suffix in "abcdfz"}
+
+    def api_transport(self, method, url, **options):
+        # The published SDK validates and serializes the shape before this boundary.
+        api_calls.append((method, url, options))
+        result = {
+            "headers": headers,
+            "request_id": "req-example",
+            "generation_ms": 1,
+            "profile_used": {
+                "user_agent": "Owned browser",
+                "language": "en-GB",
+                "screen": {"width": 1600, "height": 900},
+                "navigator": {"userAgent": "Owned browser", "language": "en-GB"},
+            },
+            "material_ref": "synthetic_reference_1234",
+            "material_expires_at": "2030-01-01T00:00:00Z",
+        }
+        options["content_callback"](json.dumps(result).encode())
+        return SimpleNamespace(status_code=200, headers={})
+
+    monkeypatch.setattr(Session, "request", api_transport)
+    result, _ = common.generate_material(
+        "https://shop.example.com/account",
+        ["https://cdn.example/loader.js"],
+        {
+            "user_agent": "Owned browser",
+            "language": "en-GB",
+            "screen": {"width": 1600},
+            "canvas": {"data_url": canvas_data_url},
+        },
+        {
+            "url": "https://shop.example.com/api/check",
+            "method": "POST",
+            "content_type": "text/plain",
+            "body": "exact\r\n",
+        },
+        {},
+        document_cookie="visible=current",
+        send=True,
+        client_factory=Client,
+        session_factory=transport["session_factory"],
+    )
+    assert len(api_calls) == 1
+    method, url, options = api_calls[0]
+    assert (method, url) == ("POST", "https://api.rayonapi.com/v1/shape")
+    assert set(options["json"]) == {
+        "source_url",
+        "scripts",
+        "profile",
+        "request",
+        "document_cookie",
+    }
+    assert options["json"]["scripts"][0]["source"].endswith("*/\n")
+    assert options["json"]["document_cookie"] == "visible=current"
+    assert options["json"]["profile"]["canvas"]["data_url"] == canvas_data_url
+    assert "canvas" not in result.profile_used
+    assert transport["sessions"][0].calls[-1][2]["data"] == b"exact\r\n"
+    assert result.headers == headers
+
+
+def test_cli_explicit_subdomain_allowance_and_proxy_keep_credentials_out_of_output(
+    tmp_path, profile_file, transport, capsys, monkeypatch
+):
+    from examples import request_workflow
+
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+    monkeypatch.setenv(
+        "RAYON_TARGET_PROXY", "http://proxy-user:proxy-value@sticky.example:8080"
+    )
+    args = inputs(tmp_path, profile_file)
+    args[args.index("--request-url") + 1] = "https://api.shop.example.com/check"
+    args += ["--allow-request-origin", "https://api.shop.example.com", "--send"]
+    request_workflow.main(args, **factories(transport))
+    assert transport["sessions"][0].calls[-1][1] == "https://api.shop.example.com/check"
+    output = capsys.readouterr().out
+    assert "proxy-user" not in output and "proxy-value" not in output
+
+
+def test_real_curl_cookie_roundtrip_keeps_http_scope_and_separate_browser_snapshot(
+    tmp_path, transport, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from curl_cffi.requests import Cookies
+    from curl_cffi.requests.cookies import CurlMorsel
+
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+    path = tmp_path / "cookies.txt"
+    path.write_text(
+        "# Netscape HTTP Cookie File\n"
+        "#HttpOnly_shop.example.com\tFALSE\t/api\tTRUE\t0\tlogin\tcurrent\n"
+    )
+    cookies = Cookies(common.load_cookies(path))
+    assert next(iter(cookies.jar)).has_nonstandard_attr("HTTPOnly")
+    morsels = cookies.get_cookies_for_curl(
+        SimpleNamespace(url="https://shop.example.com/account")
+    )
+    returned = [
+        CurlMorsel.from_curl_format(morsel.to_curl_format().encode())
+        for morsel in morsels
+    ]
+    cookies.update_cookies_from_curl(returned)
+    cookie = next(iter(cookies.jar))
+    assert cookie.domain == "shop.example.com" and cookie.path == "/api"
+    assert cookie.secure and not cookie.domain_specified
+    # Current curl_cffi conversion loses Netscape HttpOnly; HTTP scope remains useful.
+    assert not cookie.has_nonstandard_attr("HTTPOnly")
+    common.generate_material(
+        "https://shop.example.com/account",
+        ["https://cdn.example/loader.js"],
+        {"user_agent": "Owned browser"},
+        {
+            "url": "https://shop.example.com/api/check",
+            "method": "POST",
+            "content_type": "text/plain",
+            "body": "exact",
+        },
+        {},
+        cookies=cookies.jar,
+        document_cookie="visible=current",
+        send=True,
+        **factories(transport),
+    )
+    assert transport["shapes"][0]["document_cookie"] == "visible=current"
+    assert "login" not in transport["shapes"][0]["document_cookie"]
+
+
+@pytest.mark.parametrize(
+    "change, expected",
+    [
+        ("origin", "HTTPS URL"),
+        ("body", "content type"),
+        ("profile", "--profile"),
+        ("missing-profile", "--profile"),
+        ("missing-body", "--body-file"),
+        ("port", "HTTPS port"),
+    ],
+)
+def test_cli_local_input_errors_give_safe_actionable_guidance(
+    tmp_path, profile_file, transport, change, expected
+):
+    from examples import request_workflow
+
+    args = inputs(tmp_path, profile_file)
+    if change == "origin":
+        args[args.index("--source-url") + 1] = (
+            "https://user:private-marker-9931@shop.example.com/account"
+        )
+    elif change == "port":
+        args[args.index("--source-url") + 1] = (
+            "https://shop.example.com:private-marker-9931/account"
+        )
+    elif change == "body":
+        position = args.index("--content-type")
+        del args[position : position + 2]
+    elif change == "profile":
+        profile_file.write_text('{"user_agent":"private-marker-9931","unknown":1}')
+    elif change == "missing-profile":
+        profile_file.unlink()
+    elif change == "missing-body":
+        args[args.index("--body-file") + 1] = str(
+            tmp_path / "private-marker-9931-not-found.txt"
+        )
+    with pytest.raises(SystemExit) as failure:
+        request_workflow.cli(args, **factories(transport))
+    assert expected in str(failure.value.code)
+    assert "private-marker-9931" not in str(failure.value.code)
+    assert not transport["sessions"]
+
+
+def test_cli_transport_exception_message_with_credentials_is_never_displayed(
+    tmp_path, profile_file, transport, monkeypatch
+):
+    from examples import request_workflow
+
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(
+            "https://proxy-user:credential@proxy.example hidden-cookie=value"
+        )
+
+    monkeypatch.setattr(transport["session_factory"], "request", fail)
+    with pytest.raises(SystemExit) as failure:
+        request_workflow.cli(
+            inputs(tmp_path, profile_file) + ["--send"], **factories(transport)
+        )
+    assert "RuntimeError" in str(failure.value.code)
+    assert all(
+        value not in str(failure.value.code)
+        for value in ("credential", "proxy-user", "hidden-cookie")
+    )
+
+
+def test_cli_argument_error_does_not_print_untrusted_argument():
+    from examples import request_workflow
+
+    with pytest.raises(SystemExit) as failure:
+        request_workflow.cli(["--method", "https://user:credential@proxy.example"])
+    assert "--help" in str(failure.value.code)
+    assert "private-marker-9931" not in str(failure.value.code)
+
+
+@pytest.mark.parametrize(
+    "metadata, expected",
+    [
+        (
+            {"code": "unsupported_material", "request_id": "req-example"},
+            ["code: unsupported_material", "request ID: req-example"],
+        ),
+        (
+            {
+                "code": "https://user:private-marker-9931@proxy.example",
+                "request_id": "rayon-key",
+            },
+            [],
+        ),
+    ],
+)
+def test_cli_sdk_error_exposes_only_safe_metadata(
+    tmp_path, profile_file, transport, monkeypatch, metadata, expected
+):
+    from rayon_sdk_py import HTTPError
+
+    from examples import request_workflow
+
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+
+    def fail(self, shape):
+        raise HTTPError("private-marker-9931 hidden_cookie=value", **metadata)
+
+    monkeypatch.setattr(transport["client_factory"], "generate", fail)
+    with pytest.raises(SystemExit) as failure:
+        request_workflow.cli(
+            inputs(tmp_path, profile_file) + ["--send"], **factories(transport)
+        )
+    message = str(failure.value.code)
+    assert "HTTPError" in message
+    assert all(text in message for text in expected)
+    assert all(
+        text not in message
+        for text in ("private-marker-9931", "hidden_cookie", "rayon-key")
+    )

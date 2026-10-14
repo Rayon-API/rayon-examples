@@ -92,7 +92,8 @@ activity. Replace it with `--fetch-and-generate` to fetch the page and selected 
 and generate headers without sending the application request. Generation can consume
 account credit; there is no automatic retry. Output contains only the generation
 request ID and, when sending, the application HTTP status. Headers, cookies, and response
-bodies are not printed.
+bodies are not printed. Local input errors show actionable guidance; transport and
+SDK failures show the error class and safe API metadata without raw exception text.
 
 With `--send`, a single target session downloads the source page and all selected
 scripts, then sends the exact endpoint/method/body using `result.headers`. Its cookie

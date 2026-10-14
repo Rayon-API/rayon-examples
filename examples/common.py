@@ -9,8 +9,12 @@ from urllib.parse import urlsplit
 
 from curl_cffi import CurlOpt
 from curl_cffi.requests import Session
-from rayon_sdk_py import Client
+from rayon_sdk_py import Client, ValidationError
 from rayon_sdk_py import validate_profile as check_profile
+
+
+class WorkflowInputError(ValueError):
+    """An actionable constant message containing no caller or transport data."""
 
 
 def https_origin(url):
@@ -20,25 +24,35 @@ def https_origin(url):
         or "\\" in url
         or "#" in url
     ):
-        raise ValueError("Use a full HTTPS URL without whitespace or a fragment")
-    parsed = urlsplit(url)
+        raise WorkflowInputError(
+            "Use a full HTTPS URL without whitespace or a fragment"
+        )
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        raise WorkflowInputError(
+            "Use a valid full HTTPS URL without credentials"
+        ) from None
     if (
         parsed.scheme != "https"
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
     ):
-        raise ValueError("Use an HTTPS URL without credentials")
-    port = parsed.port if parsed.port is not None else 443
+        raise WorkflowInputError("Use an HTTPS URL without credentials")
+    try:
+        port = parsed.port if parsed.port is not None else 443
+    except ValueError:
+        raise WorkflowInputError("Use a valid HTTPS port") from None
     if not 1 <= port <= 65535:
-        raise ValueError("Use a valid HTTPS port")
+        raise WorkflowInputError("Use a valid HTTPS port")
     return parsed.hostname.lower(), port
 
 
 def api_key():
     key = os.environ.get("RAYON_API_KEY", "")
     if not key or any(not 33 <= ord(c) <= 126 for c in key):
-        raise ValueError(
+        raise WorkflowInputError(
             "Set RAYON_API_KEY to a valid ASCII token before calling the API"
         )
     return key
@@ -48,34 +62,50 @@ def _strict_pairs(pairs):
     obj = {}
     for key, value in pairs:
         if key in obj:
-            raise ValueError("JSON input contains duplicate keys")
+            raise WorkflowInputError("JSON input contains duplicate keys")
         obj[key] = value
     return obj
 
 
 def _invalid_constant(value):
-    raise ValueError("JSON input must use finite values")
+    raise WorkflowInputError("JSON input must use finite values")
 
 
 def load_json(path):
-    return json.loads(
-        Path(path).read_bytes().decode("utf-8"),
-        object_pairs_hook=_strict_pairs,
-        parse_constant=_invalid_constant,
-    )
+    try:
+        text = Path(path).read_bytes().decode("utf-8")
+    except (OSError, UnicodeError):
+        raise WorkflowInputError(
+            "Cannot read JSON input; check --profile or --headers-file paths and UTF-8 encoding"
+        ) from None
+    try:
+        return json.loads(
+            text, object_pairs_hook=_strict_pairs, parse_constant=_invalid_constant
+        )
+    except json.JSONDecodeError:
+        raise WorkflowInputError(
+            "Invalid JSON input; check --profile or --headers-file JSON syntax"
+        ) from None
 
 
 def validate_profile(profile):
-    profile = check_profile(profile)
+    try:
+        profile = check_profile(profile)
+    except ValidationError:
+        raise WorkflowInputError(
+            "Invalid --profile; supply supported measured browser fields without conflicting aliases"
+        ) from None
     nav = profile.get("navigator", {})
     user_agent = profile.get("user_agent") or nav.get("userAgent")
     if not user_agent or any(not 32 <= ord(c) <= 126 for c in user_agent):
-        raise ValueError(
+        raise WorkflowInputError(
             "Browser profile requires a nonempty ASCII user_agent or navigator.userAgent"
         )
     language = profile.get("language") or nav.get("language")
     if language and any(not 32 <= ord(c) <= 126 for c in language):
-        raise ValueError("Browser profile language must be safe for an HTTP header")
+        raise WorkflowInputError(
+            "Browser profile language must be safe for an HTTP header"
+        )
     return user_agent
 
 
@@ -88,7 +118,12 @@ def load_profile(path):
 def load_cookies(path):
     """Load scoped Netscape HTTP cookies; do not infer JavaScript visibility."""
     jar = MozillaCookieJar(str(path))
-    jar.load(ignore_discard=True, ignore_expires=True)
+    try:
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except (OSError, UnicodeError, ValueError):
+        raise WorkflowInputError(
+            "Cannot load --cookies-file; provide a readable Netscape cookie export"
+        ) from None
     # Browser/curl Netscape exports use zero for session-cookie expiry.
     for cookie in jar:
         if cookie.expires == 0:
@@ -100,13 +135,13 @@ def load_cookies(path):
 
 def validate_headers(headers):
     if not isinstance(headers, dict):
-        raise ValueError("Application headers must be a JSON object")
+        raise WorkflowInputError("Application headers must be a JSON object")
     names = set()
     for name, value in headers.items():
         if not isinstance(name, str) or not re.fullmatch(
             r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name
         ):
-            raise ValueError("Invalid application header name")
+            raise WorkflowInputError("Invalid application header name")
         lowered = name.lower()
         if lowered in names or lowered in {
             "cookie",
@@ -116,10 +151,14 @@ def validate_headers(headers):
             "transfer-encoding",
             "accept-language",
         }:
-            raise ValueError("Application header overrides session identity or framing")
+            raise WorkflowInputError(
+                "Application header overrides session identity or framing"
+            )
         names.add(lowered)
         if not isinstance(value, str) or any(not 32 <= ord(c) <= 126 for c in value):
-            raise ValueError("Application header values must be safe ASCII strings")
+            raise WorkflowInputError(
+                "Application header values must be safe ASCII strings"
+            )
     return headers
 
 
@@ -140,14 +179,20 @@ def validate_inputs(
     """Preflight local inputs before opening either network session."""
     allowed = {https_origin(source_url)}
     for origin in allow_request_origins:
-        parsed = urlsplit(origin)
         allowed.add(https_origin(origin))
+        parsed = urlsplit(origin)
         if parsed.path not in ("", "/") or parsed.query:
-            raise ValueError("Allowed application origin must omit paths and queries")
+            raise WorkflowInputError(
+                "Allowed application origin must omit paths and queries"
+            )
     if https_origin(request["url"]) not in allowed:
-        raise ValueError("Explicitly allow the application request's HTTPS origin")
+        raise WorkflowInputError(
+            "Explicitly allow the application request's HTTPS origin"
+        )
     if not 1 <= len(script_urls) <= 16:
-        raise ValueError("Provide 1 to 16 explicit script URLs in execution order")
+        raise WorkflowInputError(
+            "Provide 1 to 16 explicit script URLs in execution order"
+        )
     for url in script_urls:
         https_origin(url)
     user_agent = validate_profile(profile)
@@ -160,42 +205,48 @@ def validate_inputs(
         "DELETE",
         "OPTIONS",
     }:
-        raise ValueError("Unsupported application method")
+        raise WorkflowInputError("Unsupported application method")
     body, content_type = request.get("body"), request.get("content_type")
     if body is not None:
         if not isinstance(body, str) or len(body.encode("utf-8")) > 256 * 1024:
-            raise ValueError("Application body must be a UTF-8 string up to 256 KiB")
+            raise WorkflowInputError(
+                "Application body must be a UTF-8 string up to 256 KiB"
+            )
         if request["method"] in {"GET", "HEAD"} or not content_type:
-            raise ValueError("A body needs a content type and a body-capable method")
+            raise WorkflowInputError(
+                "A body needs a content type and a body-capable method"
+            )
     if content_type is not None:
         if (
             not isinstance(content_type, str)
             or len(content_type) > 256
             or any(ord(c) < 32 or ord(c) == 127 for c in content_type)
         ):
-            raise ValueError("Invalid application content type")
+            raise WorkflowInputError("Invalid application content type")
         if not re.fullmatch(
             r"[\w!#$&^.+-]+/[\w!#$&^.+-]+(?:\s*;[^\r\n]*)?", content_type
         ):
-            raise ValueError("Invalid application content type")
+            raise WorkflowInputError("Invalid application content type")
         media = content_type.split(";", 1)[0].lower()
         if body is not None and (
             media in {"application/octet-stream", "application/pdf", "application/zip"}
             or media.startswith(("image/", "audio/", "video/", "multipart/"))
         ):
-            raise ValueError(
+            raise WorkflowInputError(
                 "Use a UTF-8 text body; binary and multipart bodies are unsupported"
             )
     validate_headers(application_headers)
     for name, value in application_headers.items():
         if name.lower() == "content-type" and value != content_type:
-            raise ValueError("Application Content-Type must match generation context")
+            raise WorkflowInputError(
+                "Application Content-Type must match generation context"
+            )
     if (
         not isinstance(document_cookie, str)
         or len(document_cookie.encode("utf-8")) > 16 * 1024
         or any(ord(c) < 32 or ord(c) == 127 for c in document_cookie)
     ):
-        raise ValueError(
+        raise WorkflowInputError(
             "Document cookie must be current UTF-8 text without control characters, up to 16 KiB"
         )
     return user_agent
@@ -262,7 +313,7 @@ def generate_material(
                 timeout=30,
             )
             if not 200 <= response.status_code < 300:
-                raise ValueError(
+                raise WorkflowInputError(
                     "Material download failed or redirected; provide the final full HTTPS URL"
                 )
             return response
@@ -284,13 +335,13 @@ def generate_material(
                 source,
                 re.IGNORECASE,
             ):
-                raise ValueError(
+                raise WorkflowInputError(
                     "Protection script download returned HTML; refresh the selected script material"
                 )
             size = len(source.encode("utf-8"))
             total += size
             if not source or size > 2 * 1024 * 1024 or total > 3 * 1024 * 1024:
-                raise ValueError(
+                raise WorkflowInputError(
                     "Protection script is empty or exceeds material size limits"
                 )
             scripts.append({"url": url, "source": source})
@@ -314,7 +365,7 @@ def generate_material(
             ) != user_agent or not _same_supplied_fields(
                 reported_fields, result.profile_used
             ):
-                raise ValueError(
+                raise WorkflowInputError(
                     "Returned browser profile differs from the measured target session profile"
                 )
             headers = {**fetch_headers, **application_headers}
@@ -329,7 +380,7 @@ def generate_material(
                 "transfer-encoding",
             }
             if any(name.lower() in protected for name in result.headers):
-                raise ValueError(
+                raise WorkflowInputError(
                     "Generated header conflicts with a session or application header"
                 )
             headers.update(result.headers)

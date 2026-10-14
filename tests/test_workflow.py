@@ -286,3 +286,121 @@ def test_real_curl_cookie_roundtrip_keeps_http_scope_and_separate_browser_snapsh
     )
     assert transport["shapes"][0]["document_cookie"] == "visible=current"
     assert "login" not in transport["shapes"][0]["document_cookie"]
+
+
+@pytest.mark.parametrize(
+    "change, expected",
+    [
+        ("origin", "HTTPS URL"),
+        ("body", "content type"),
+        ("profile", "--profile"),
+        ("missing-profile", "--profile"),
+        ("missing-body", "--body-file"),
+        ("port", "HTTPS port"),
+    ],
+)
+def test_cli_local_input_errors_give_safe_actionable_guidance(
+    tmp_path, profile_file, transport, change, expected
+):
+    from examples import request_workflow
+
+    args = inputs(tmp_path, profile_file)
+    if change == "origin":
+        args[args.index("--source-url") + 1] = (
+            "https://user:private-marker-9931@shop.example.com/account"
+        )
+    elif change == "port":
+        args[args.index("--source-url") + 1] = (
+            "https://shop.example.com:private-marker-9931/account"
+        )
+    elif change == "body":
+        position = args.index("--content-type")
+        del args[position : position + 2]
+    elif change == "profile":
+        profile_file.write_text('{"user_agent":"private-marker-9931","unknown":1}')
+    elif change == "missing-profile":
+        profile_file.unlink()
+    elif change == "missing-body":
+        args[args.index("--body-file") + 1] = str(
+            tmp_path / "private-marker-9931-not-found.txt"
+        )
+    with pytest.raises(SystemExit) as failure:
+        request_workflow.cli(args, **factories(transport))
+    assert expected in str(failure.value.code)
+    assert "private-marker-9931" not in str(failure.value.code)
+    assert not transport["sessions"]
+
+
+def test_cli_transport_exception_message_with_credentials_is_never_displayed(
+    tmp_path, profile_file, transport, monkeypatch
+):
+    from examples import request_workflow
+
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(
+            "https://proxy-user:credential@proxy.example hidden-cookie=value"
+        )
+
+    monkeypatch.setattr(transport["session_factory"], "request", fail)
+    with pytest.raises(SystemExit) as failure:
+        request_workflow.cli(
+            inputs(tmp_path, profile_file) + ["--send"], **factories(transport)
+        )
+    assert "RuntimeError" in str(failure.value.code)
+    assert all(
+        value not in str(failure.value.code)
+        for value in ("credential", "proxy-user", "hidden-cookie")
+    )
+
+
+def test_cli_argument_error_does_not_print_untrusted_argument():
+    from examples import request_workflow
+
+    with pytest.raises(SystemExit) as failure:
+        request_workflow.cli(["--method", "https://user:credential@proxy.example"])
+    assert "--help" in str(failure.value.code)
+    assert "private-marker-9931" not in str(failure.value.code)
+
+
+@pytest.mark.parametrize(
+    "metadata, expected",
+    [
+        (
+            {"code": "unsupported_material", "request_id": "req-example"},
+            ["code: unsupported_material", "request ID: req-example"],
+        ),
+        (
+            {
+                "code": "https://user:private-marker-9931@proxy.example",
+                "request_id": "rayon-key",
+            },
+            [],
+        ),
+    ],
+)
+def test_cli_sdk_error_exposes_only_safe_metadata(
+    tmp_path, profile_file, transport, monkeypatch, metadata, expected
+):
+    from rayon_sdk_py import HTTPError
+
+    from examples import request_workflow
+
+    monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
+
+    def fail(self, shape):
+        raise HTTPError("private-marker-9931 hidden_cookie=value", **metadata)
+
+    monkeypatch.setattr(transport["client_factory"], "generate", fail)
+    with pytest.raises(SystemExit) as failure:
+        request_workflow.cli(
+            inputs(tmp_path, profile_file) + ["--send"], **factories(transport)
+        )
+    message = str(failure.value.code)
+    assert "HTTPError" in message
+    assert all(text in message for text in expected)
+    assert all(
+        text not in message
+        for text in ("private-marker-9931", "hidden_cookie", "rayon-key")
+    )

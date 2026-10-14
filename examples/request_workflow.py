@@ -1,9 +1,14 @@
 """Validate offline, or explicitly fetch material, generate headers, and send an exact request."""
 
 import argparse
+import os
+import re
 from pathlib import Path
 
+from rayon_sdk_py import RayonError
+
 from examples.common import (
+    WorkflowInputError,
     generate_material,
     load_cookies,
     load_headers,
@@ -12,8 +17,15 @@ from examples.common import (
 )
 
 
+class WorkflowArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise WorkflowInputError(
+            "Invalid or missing CLI arguments; run --help to check required flags and allowed methods"
+        )
+
+
 def main(argv=None, *, client_factory=None, session_factory=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = WorkflowArgumentParser(description=__doc__)
     parser.add_argument(
         "--source-url", required=True, help="Full HTTPS page URL (SOURCE_URL)"
     )
@@ -79,15 +91,28 @@ def main(argv=None, *, client_factory=None, session_factory=None):
     )
     args = parser.parse_args(argv)
     profile = load_profile(args.profile)
+    try:
+        body = (
+            Path(args.body_file).read_bytes().decode("utf-8")
+            if args.body_file
+            else None
+        )
+    except (OSError, UnicodeError):
+        raise WorkflowInputError(
+            "Cannot read --body-file; provide a readable UTF-8 text body"
+        ) from None
     request = {
         "url": args.request_url,
         "method": args.method,
         "content_type": args.content_type,
-        "body": Path(args.body_file).read_bytes().decode("utf-8")
-        if args.body_file
-        else None,
+        "body": body,
     }
-    document_cookie = Path(args.document_cookie_file).read_bytes().decode("utf-8")
+    try:
+        document_cookie = Path(args.document_cookie_file).read_bytes().decode("utf-8")
+    except (OSError, UnicodeError):
+        raise WorkflowInputError(
+            "Cannot read --document-cookie-file; provide a readable UTF-8 browser cookie snapshot"
+        ) from None
     headers = load_headers(args.headers_file) if args.headers_file else {}
     cookies = load_cookies(args.cookies_file) if args.cookies_file else None
     validate_inputs(
@@ -123,11 +148,30 @@ def main(argv=None, *, client_factory=None, session_factory=None):
         print(f"Application response: HTTP {response.status_code}")
 
 
-if __name__ == "__main__":
+def cli(argv=None, **factories):
     try:
-        main()
+        return main(argv, **factories)
+    except WorkflowInputError as error:
+        raise SystemExit(f"Input error: {error}") from None
     except Exception as error:
-        # Transport errors may include URLs or credentials; keep them out of shared logs.
-        raise SystemExit(
-            f"Workflow failed ({type(error).__name__}); check local inputs and session configuration."
-        ) from None
+        # Only SDK metadata passes this boundary; never format transport exception text.
+        message = (
+            f"Workflow failed ({type(error).__name__}); check session configuration."
+        )
+        if isinstance(error, RayonError):
+            key = os.environ.get("RAYON_API_KEY")
+            for label, value, pattern in (
+                ("code", error.code, r"[a-z][a-z0-9_]{0,63}"),
+                ("request ID", error.request_id, r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"),
+            ):
+                if (
+                    isinstance(value, str)
+                    and re.fullmatch(pattern, value)
+                    and not (key and key in value)
+                ):
+                    message += f" {label}: {value}."
+        raise SystemExit(message) from None
+
+
+if __name__ == "__main__":
+    cli()

@@ -9,8 +9,7 @@ through your existing HTTP client or browser.
 [Documentation](https://docs.rayonapi.com/)
 
 [Go v1.0.0](https://github.com/Rayon-API/rayon-sdk-go) is available.
-[Playwright source](https://github.com/Rayon-API/rayon-sdk-playwright) is public;
-its npm release is pending.
+[Playwright 0.1.0](https://github.com/Rayon-API/rayon-sdk-playwright) is published.
 
 ## Optional Python helper
 

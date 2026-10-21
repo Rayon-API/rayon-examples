@@ -3,9 +3,10 @@
 import json
 import os
 import re
+from contextlib import contextmanager
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit
 
 from curl_cffi import CurlOpt
 from curl_cffi.requests import Session
@@ -76,7 +77,7 @@ def load_json(path):
         text = Path(path).read_bytes().decode("utf-8")
     except (OSError, UnicodeError):
         raise WorkflowInputError(
-            "Cannot read JSON input; check --profile or --headers-file paths and UTF-8 encoding"
+            "Cannot read JSON input; check --config, --profile or --headers-file paths and UTF-8 encoding"
         ) from None
     try:
         return json.loads(
@@ -84,7 +85,7 @@ def load_json(path):
         )
     except json.JSONDecodeError:
         raise WorkflowInputError(
-            "Invalid JSON input; check --profile or --headers-file JSON syntax"
+            "Invalid JSON input; check --config, --profile or --headers-file JSON syntax"
         ) from None
 
 
@@ -175,6 +176,8 @@ def validate_inputs(
     document_cookie,
     *,
     allow_request_origins=(),
+    mode="header",
+    form=None,
 ):
     """Preflight local inputs before opening either network session."""
     allowed = {https_origin(source_url)}
@@ -249,7 +252,67 @@ def validate_inputs(
         raise WorkflowInputError(
             "Document cookie must be current UTF-8 text without control characters, up to 16 KiB"
         )
+    validate_form(mode, form, request)
     return user_agent
+
+
+def validate_form(mode, form, request):
+    """Check form context locally without changing application field encoding."""
+    if mode not in ("header", "form"):
+        raise WorkflowInputError("Use mode header or form")
+    if mode == "header":
+        if form is not None:
+            raise WorkflowInputError("Form metadata requires mode form")
+        return
+    if request["method"] != "POST" or not re.fullmatch(
+        r'application/x-www-form-urlencoded(?:\s*;\s*charset\s*=\s*(?:"(?:utf-8|utf8)"|utf-8|utf8))?\s*',
+        request.get("content_type") or "", re.I,
+    ):
+        raise WorkflowInputError(
+            "Form mode needs POST and application/x-www-form-urlencoded with optional UTF-8 charset"
+        )
+    if form is not None and (
+        not isinstance(form, dict) or not form.keys() <= {"id", "name"}
+        or any(not isinstance(value, str) or len(value) > 256
+               or any(ord(c) < 32 or ord(c) == 127 for c in value)
+               for value in form.values())
+    ):
+        raise WorkflowInputError("Form metadata accepts only id and name strings up to 256 characters")
+    body = request.get("body")
+    if not isinstance(body, str) or re.search(r"%(?![0-9A-Fa-f]{2})", body):
+        raise WorkflowInputError("Provide the original UTF-8 URL-encoded form body before telemetry insertion")
+    families, count = {}, 0
+    try:
+        for value in (form or {}).values():
+            value.encode("utf-8", errors="strict")
+        for part in body.split("&"):
+            if not part:
+                continue
+            count += 1
+            name, _, value = part.partition("=")
+            name, value = (unquote_plus(item, encoding="utf-8", errors="strict")
+                           for item in (name, value))
+            if "\x00" in name or "\x00" in value or len(name.encode("utf-8")) > 256 or count > 1024:
+                raise ValueError
+            match = re.fullmatch(r"([!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128})([abcdfz])", name)
+            if match:
+                families.setdefault(match[1], set()).add(match[2])
+        if any(slots == set("abcdfz") for slots in families.values()):
+            raise ValueError
+    except (ValueError, UnicodeError):
+        raise WorkflowInputError(
+            "Provide a valid UTF-8 URL-encoded form with at most 1024 fields and no existing telemetry family"
+        ) from None
+
+
+@contextmanager
+def workflow_stage(name):
+    """Attach only a constant stage label while preserving the original exception."""
+    try:
+        yield
+    except Exception as error:
+        error._workflow_stage = name
+        raise
 
 
 def _same_supplied_fields(supplied, used):
@@ -275,6 +338,8 @@ def generate_material(
     session_factory=None,
     impersonate="chrome",
     allow_request_origins=(),
+    mode="header",
+    form=None,
 ):
     """Fetch explicit material, generate, and optionally send through the same session."""
     key = api_key()
@@ -286,6 +351,8 @@ def generate_material(
         application_headers,
         document_cookie,
         allow_request_origins=allow_request_origins,
+        mode=mode,
+        form=form,
     )
     proxy = os.environ.get("RAYON_TARGET_PROXY") or None
     with (session_factory or Session)(
@@ -304,14 +371,11 @@ def generate_material(
             fetch_headers["Accept-Language"] = language
 
         def fetch(url):
-            response = session.request(
-                "GET",
-                url,
-                headers=fetch_headers,
-                allow_redirects=False,
-                verify=True,
-                timeout=30,
-            )
+            with workflow_stage("collection"):
+                response = session.request(
+                    "GET", url, headers=fetch_headers, allow_redirects=False,
+                    verify=True, timeout=30,
+                )
             if not 200 <= response.status_code < 300:
                 raise WorkflowInputError(
                     "Material download failed or redirected; provide the final full HTTPS URL"
@@ -352,8 +416,13 @@ def generate_material(
             "request": dict(request),
             "document_cookie": document_cookie,
         }
-        with (client_factory or Client)(api_key=key) as client:
-            result = client.generate(shape)
+        if mode == "form":
+            shape["mode"] = "form"
+            if form is not None:
+                shape["form"] = dict(form)
+        with workflow_stage("generation"):
+            with (client_factory or Client)(api_key=key) as client:
+                result = client.generate(shape)
         response = None
         if send:
             # The API omits canvas from profile_used; compare every reported supplied field.
@@ -373,25 +442,22 @@ def generate_material(
                 name.lower() == "content-type" for name in headers
             ):
                 headers["Content-Type"] = request["content_type"]
-            protected = {name.lower() for name in headers} | {
-                "cookie",
-                "host",
-                "content-length",
-                "transfer-encoding",
-            }
-            if any(name.lower() in protected for name in result.headers):
-                raise WorkflowInputError(
-                    "Generated header conflicts with a session or application header"
-                )
-            headers.update(result.headers)
             body = request["body"]
-            response = session.request(
-                request["method"],
-                request["url"],
-                data=body.encode("utf-8") if body is not None else None,
-                headers=headers,
-                allow_redirects=False,
-                verify=True,
-                timeout=30,
-            )
+            if mode == "form":
+                body = result.form_body + ("&" + body if body else "")
+            else:
+                protected = {name.lower() for name in headers} | {
+                    "cookie", "host", "content-length", "transfer-encoding",
+                }
+                if any(name.lower() in protected for name in result.headers):
+                    raise WorkflowInputError(
+                        "Generated header conflicts with a session or application header"
+                    )
+                headers.update(result.headers)
+            with workflow_stage("application"):
+                response = session.request(
+                    request["method"], request["url"],
+                    data=body.encode("utf-8") if body is not None else None,
+                    headers=headers, allow_redirects=False, verify=True, timeout=30,
+                )
         return result, response

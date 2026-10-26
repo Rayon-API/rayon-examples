@@ -66,7 +66,7 @@ def test_live_modes_preserve_order_body_and_hide_secrets(
     session = transport["sessions"][0]
     assert len(session.calls) == count
     shape = transport["shapes"][0]
-    assert [item["url"] for item in shape["scripts"]] == [
+    assert [item["url"] for item in transport["preparations"][0]["scripts"]] == [
         "https://shop.example.com/loader.js",
         "https://cdn.example/payload.js",
     ]
@@ -157,7 +157,7 @@ def test_published_sdk_receives_complete_material_only_contract(
     from curl_cffi.requests import Session
     from rayon_sdk_py import Client, __version__
 
-    assert __version__.split(".")[0] == "1"
+    assert __version__.split(".")[0] == "2"
     monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
     api_calls = []
     headers = {f"X-Example-{suffix}": "sample" for suffix in "abcdfz"}
@@ -165,6 +165,10 @@ def test_published_sdk_receives_complete_material_only_contract(
     def api_transport(self, method, url, **options):
         # The published SDK validates and serializes the shape before this boundary.
         api_calls.append((method, url, options))
+        if url.endswith("/v1/materials/prepare"):
+            from conftest import preparation_frame
+            options["content_callback"](json.dumps(preparation_frame()).encode())
+            return SimpleNamespace(status_code=200, headers={})
         result = {
             "headers": headers,
             "request_id": "req-example",
@@ -203,9 +207,9 @@ def test_published_sdk_receives_complete_material_only_contract(
         client_factory=Client,
         session_factory=transport["session_factory"],
     )
-    assert len(api_calls) == 1
+    assert len(api_calls) == 2
     method, url, options = api_calls[0]
-    assert (method, url) == ("POST", "https://api.rayonapi.com/v1/shape")
+    assert (method, url) == ("POST", "https://api.rayonapi.com/v1/materials/prepare")
     assert set(options["json"]) == {
         "source_url",
         "scripts",
@@ -219,6 +223,8 @@ def test_published_sdk_receives_complete_material_only_contract(
     assert "canvas" not in result.profile_used
     assert transport["sessions"][0].calls[-1][2]["data"] == b"exact\r\n"
     assert result.headers == headers
+    assert api_calls[1][1].endswith("/v1/shape")
+    assert "scripts" not in api_calls[1][2]["json"]
 
 
 def test_cli_explicit_subdomain_allowance_and_proxy_keep_credentials_out_of_output(

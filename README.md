@@ -1,11 +1,11 @@
 # RayonAPI examples
 
 
-Preparation-first startup is a coordinated backend release preview. Confirm the
-preparation endpoints and SDK 2.0.0 are available before running network modes.
-Legacy serving remains unchanged until the announced rollout. A planned 30-day
-migration window starts with that rollout; mandatory preparation/Rust-only serving
-is gated on complete-output readiness and is not active in this preview.
+The additive preparation API is available. These examples use SDK 2.0.0 to
+prepare and wait before starting a workload. Legacy generation remains available;
+mandatory preparation is not enabled. A 30-day migration window and cutoff will be
+announced separately; no cutoff date is set. Rust-only enforcement remains gated
+on complete-output readiness and the announced migration.
 
 Start with the [SDK quickstart](https://docs.rayonapi.com/quickstart):
 install an SDK, check usage for free, collect inputs, explicitly prepare and wait,
@@ -16,8 +16,8 @@ through your existing HTTP client or browser.
 [JavaScript / TypeScript](https://github.com/Rayon-API/rayon-sdk-js) ·
 [Documentation](https://docs.rayonapi.com/)
 
-[Go v2.0.0](https://github.com/Rayon-API/rayon-sdk-go) is planned for the coordinated release.
-[Playwright 1.0.0](https://github.com/Rayon-API/rayon-sdk-playwright) is planned for the coordinated release.
+[Go v2.0.0](https://github.com/Rayon-API/rayon-sdk-go) is available.
+[Playwright 1.0.0](https://github.com/Rayon-API/rayon-sdk-playwright) is available.
 
 ## Optional Python helper
 

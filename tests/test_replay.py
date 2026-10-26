@@ -52,6 +52,7 @@ def test_explicit_proxy_and_persistent_session_are_shared_for_every_target_reque
     assert transport["events"] == [
         ("GET", SOURCE),
         ("GET", "https://cdn.example/selected.js"),
+        ("prepare_and_wait", None),
         ("generate", None),
         ("POST", ENDPOINT),
     ]
@@ -334,7 +335,7 @@ def test_unsafe_application_headers_rejected_before_network(transport, headers):
 def test_source_page_encoding_does_not_change_script_material(transport):
     transport["contents"] = {SOURCE: b"<p>\xe9</p>"}
     run(transport)
-    assert transport["shapes"][0]["scripts"][0]["source"].endswith("*/\n")
+    assert transport["preparations"][0]["scripts"][0]["source"].endswith("*/\n")
 
 
 def test_invalid_script_utf8_stops_before_generation(transport):
@@ -434,4 +435,4 @@ def test_script_with_unusual_mime_preserves_full_source(transport, mime):
     transport["response_headers"] = {"Content-Type": mime}
     transport["source"] = "\ufeff\n/* owned JavaScript */\nconst example = 1;\n"
     run(transport)
-    assert transport["shapes"][0]["scripts"][0]["source"] == transport["source"]
+    assert transport["preparations"][0]["scripts"][0]["source"] == transport["source"]

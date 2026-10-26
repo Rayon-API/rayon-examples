@@ -70,7 +70,7 @@ def test_explicit_flags_override_config_including_repeated_lists(
     ], **factories(transport))
     shape = transport["shapes"][0]
     assert shape["request"]["method"] == "POST"
-    assert [s["url"] for s in shape["scripts"]] == ["https://cdn.example/new.js"]
+    assert [s["url"] for s in transport["preparations"][0]["scripts"]] == ["https://cdn.example/new.js"]
     assert shape["document_cookie"] == ""
     assert transport["sessions"][0].options["impersonate"] == "chrome136"
 
@@ -256,6 +256,10 @@ def test_published_sdk_form_contract_without_result_headers(transport, monkeypat
 
     def api_transport(self, method, url, **options):
         api_calls.append(options["json"])
+        if url.endswith("/v1/materials/prepare"):
+            from conftest import preparation_frame
+            options["content_callback"](json.dumps(preparation_frame()).encode())
+            return SimpleNamespace(status_code=200, headers={})
         options["content_callback"](json.dumps({
             "form_fields": fields, "form_body": telemetry,
             "profile_used": options["json"]["profile"], "request_id": "req-form",
@@ -267,7 +271,8 @@ def test_published_sdk_form_contract_without_result_headers(transport, monkeypat
     monkeypatch.setattr(Session, "request", api_transport)
     result, response = form_run(transport, client_factory=Client)
     assert isinstance(result, FormShapeResult) and not hasattr(result, "headers")
-    assert len(api_calls) == 1 and api_calls[0]["mode"] == "form"
+    assert len(api_calls) == 2 and all(call["mode"] == "form" for call in api_calls)
+    assert "scripts" in api_calls[0] and "material_ref" in api_calls[1]
     assert transport["sessions"][0].calls[-1][2]["data"] == (
         telemetry + "&" + api_calls[0]["request"]["body"]
     ).encode()

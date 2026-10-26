@@ -1,4 +1,4 @@
-"""Validate offline, or explicitly fetch material, generate, and send an exact request."""
+"""Validate offline, or collect and prepare inputs before optional generation/sending."""
 
 import argparse
 import os
@@ -122,14 +122,18 @@ def main(argv=None, *, client_factory=None, session_factory=None):
     parser.add_argument("--form-name", help="Optional original HTML form name for form mode")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
+        "--prepare-only", action="store_true",
+        help="Fetch complete inputs and wait for server readiness; no generation or application request",
+    )
+    mode.add_argument(
         "--fetch-and-generate",
         action="store_true",
-        help="Fetch source page and chosen scripts, call /v1/shape; no application request",
+        help="Fetch full inputs, prepare and wait, then call /v1/shape; no application request",
     )
     mode.add_argument(
         "--send",
         action="store_true",
-        help="Fetch source page and chosen scripts, generate, then send the exact application request in the same session",
+        help="Fetch full inputs, prepare and wait, generate, then send the exact application request in the same session",
     )
     args = resolve_arguments(parser.parse_args(argv))
     profile = load_profile(args.profile)
@@ -169,9 +173,9 @@ def main(argv=None, *, client_factory=None, session_factory=None):
         mode=args.mode,
         form=getattr(args, "form", None),
     )
-    if not args.send and not args.fetch_and_generate:
+    if not args.send and not args.fetch_and_generate and not args.prepare_only:
         print(
-            "Inputs validated offline. Add --fetch-and-generate or --send to run the workflow."
+            "Inputs validated offline. Add --prepare-only, --fetch-and-generate or --send to run the workflow."
         )
         return
     result, response = generate_material(
@@ -183,6 +187,7 @@ def main(argv=None, *, client_factory=None, session_factory=None):
         document_cookie=document_cookie,
         cookies=cookies,
         send=args.send,
+        prepare_only=args.prepare_only,
         client_factory=client_factory,
         session_factory=session_factory,
         impersonate=args.impersonate,
@@ -190,6 +195,9 @@ def main(argv=None, *, client_factory=None, session_factory=None):
         mode=args.mode,
         form=getattr(args, "form", None),
     )
+    if args.prepare_only:
+        print(f"Preparation ready: {result.preparation_id}")
+        return
     print(f"Generation request ID: {result.request_id}")
     if response is not None:
         print(f"Application response: HTTP {response.status_code}")
@@ -210,6 +218,7 @@ def cli(argv=None, **factories):
             for label, value, pattern in (
                 ("code", error.code, r"[a-z][a-z0-9_]{0,63}"),
                 ("request ID", error.request_id, r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"),
+                ("preparation ID", getattr(error, "preparation_id", None), r"[A-Za-z0-9_-]{16,128}"),
             ):
                 if (
                     isinstance(value, str)
@@ -217,7 +226,7 @@ def cli(argv=None, **factories):
                     and not (key and key in value)
                 ):
                     message += f" {label}: {value}."
-            # SDK 1.1.4 accepts reason/action only from its bundled error catalog.
+            # SDK 2 accepts reason/action only from its bundled error catalog.
             if error.reason and error.action and not (key and (key in error.reason or key in error.action)):
                 message += f" reason: {error.reason}. {error.action}"
             if error.billing_status in {"not_charged", "pending", "unknown"}:
@@ -225,6 +234,8 @@ def cli(argv=None, **factories):
         stage = getattr(error, "_workflow_stage", None)
         if stage == "collection":
             message += " Material collection failed; generation and the application request were not sent."
+        elif stage == "preparation":
+            message += " Preparation did not reach ready; no generation occurred and the application request was not sent. Resume status/wait with the preparation ID; waiting does not cancel the server job."
         elif stage == "application":
             message += " Application send failed after generation; acceptance is unknown. Check the application outcome and API request history before generating again."
         elif stage == "generation":

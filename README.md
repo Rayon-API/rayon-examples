@@ -1,15 +1,23 @@
 # RayonAPI examples
 
+
+Preparation-first startup is a coordinated backend release preview. Confirm the
+preparation endpoints and SDK 2.0.0 are available before running network modes.
+Legacy serving remains unchanged until the announced rollout. A planned 30-day
+migration window starts with that rollout; mandatory preparation/Rust-only serving
+is gated on complete-output readiness and is not active in this preview.
+
 Start with the [SDK quickstart](https://docs.rayonapi.com/quickstart):
-install an SDK, check usage for free, prepare inputs, generate, then apply the result
+install an SDK, check usage for free, collect inputs, explicitly prepare and wait,
+then generate and apply the result
 through your existing HTTP client or browser.
 
 [Python](https://github.com/Rayon-API/rayon-sdk-py) ·
 [JavaScript / TypeScript](https://github.com/Rayon-API/rayon-sdk-js) ·
 [Documentation](https://docs.rayonapi.com/)
 
-[Go v1.0.0](https://github.com/Rayon-API/rayon-sdk-go) is available.
-[Playwright 0.1.0](https://github.com/Rayon-API/rayon-sdk-playwright) is published.
+[Go v2.0.0](https://github.com/Rayon-API/rayon-sdk-go) is planned for the coordinated release.
+[Playwright 1.0.0](https://github.com/Rayon-API/rayon-sdk-playwright) is planned for the coordinated release.
 
 ## Optional Python helper
 
@@ -59,10 +67,13 @@ python -m examples.request_workflow --config local/workflow.json
 Set `RAYON_API_KEY` in your environment, then explicitly choose a network action:
 
 ```sh
-# Download and generate (can consume credit); do not send the target request.
+# Collect and prepare only; no generation or application request.
+python -m examples.request_workflow --config local/workflow.json --prepare-only
+
+# Download, prepare and wait, then generate (can consume credit); no target request.
 python -m examples.request_workflow --config local/workflow.json --fetch-and-generate
 
-# Download, generate and send through the same target session.
+# Download, prepare and wait, generate and send in the same target session.
 python -m examples.request_workflow --config local/workflow.json --send
 ```
 
@@ -78,3 +89,34 @@ open across calls; generate fresh telemetry for each exact request.
 
 [API reference](https://docs.rayonapi.com/api-reference) ·
 [Support](mailto:support@rayonapi.com) · [MIT license](LICENSE)
+
+
+## Preparation before workload
+
+Every live mode calls `prepare_and_wait` once with the complete script sources,
+profile, exact request, source-document cookies, and mode/form context before
+starting generation. A ready result confirms complete validation/publication and
+`execution_backend: "rust"`. Partial material or partial output fails preparation;
+a downloaded script or source reference alone does not make a workload ready.
+
+`--prepare-only` returns safe preparation metadata without generating or sending.
+`--fetch-and-generate` prepares and waits, then generates without sending the
+application request. `--send` prepares and waits, generates fresh output, then sends
+that exact request through the same target session. These modes are mutually
+exclusive and cannot be enabled from config. Running a later CLI command starts a
+new workflow; the helper does not persist a target session or old generated headers.
+
+Preparation failure stops the workload. The CLI prints a safe preparation ID when
+available so an existing job can be resumed with `client.get_preparation(id)` or
+`client.wait_until_ready(id, wait_timeout=60)`. Waiting/cancellation does not cancel
+the server job. States are `queued`, `learning`, `validating`, `publishing`, `ready`,
+`failed`, and `expired`. A failed or expired job needs corrected/current context and
+an explicit new prepare, rather than an arbitrary generation retry.
+
+For persistent integrations, reprepare after `ready_until` or relevant full-context
+changes. `material_expires_at` governs the source reference and can differ from
+readiness lifetime. Generation uses the returned material reference and still
+produces fresh complete telemetry for every exact request. The SDK `generate`
+method never prepares or waits implicitly. The preparation POST is issued once
+with a stable idempotency key; only transient status GETs are retried with jitter.
+See the [preparation contract](https://docs.rayonapi.com/reference/preparation).

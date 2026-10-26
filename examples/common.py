@@ -334,6 +334,7 @@ def generate_material(
     document_cookie="",
     cookies=None,
     send=False,
+    prepare_only=False,
     client_factory=None,
     session_factory=None,
     impersonate="chrome",
@@ -341,7 +342,7 @@ def generate_material(
     mode="header",
     form=None,
 ):
-    """Fetch explicit material, generate, and optionally send through the same session."""
+    """Collect full inputs, explicitly prepare at startup, then optionally generate/send."""
     key = api_key()
     user_agent = validate_inputs(
         source_url,
@@ -420,9 +421,15 @@ def generate_material(
             shape["mode"] = "form"
             if form is not None:
                 shape["form"] = dict(form)
-        with workflow_stage("generation"):
-            with (client_factory or Client)(api_key=key) as client:
-                result = client.generate(shape)
+        with (client_factory or Client)(api_key=key) as client:
+            with workflow_stage("preparation"):
+                ready = client.prepare_and_wait(shape, wait_timeout=60)
+            if prepare_only:
+                return ready, None
+            generation_shape = {key: value for key, value in shape.items() if key != "scripts"}
+            generation_shape["material_ref"] = ready.material_ref
+            with workflow_stage("generation"):
+                result = client.generate(generation_shape)
         response = None
         if send:
             # The API omits canvas from profile_used; compare every reported supplied field.

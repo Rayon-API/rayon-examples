@@ -36,7 +36,7 @@ def profile_file(tmp_path):
 
 @pytest.fixture
 def transport():
-    state = {"sessions": [], "clients": [], "shapes": [], "events": []}
+    state = {"sessions": [], "clients": [], "shapes": [], "preparations": [], "events": []}
 
     class Session:
         def __init__(self, **options):
@@ -88,6 +88,12 @@ def transport():
         def __exit__(self, *args):
             self.closed = True
 
+        def prepare_and_wait(self, shape, *, wait_timeout=60):
+            state["preparations"].append(shape)
+            state["events"].append(("prepare_and_wait", None))
+            return SimpleNamespace(preparation_id="prep_0123456789abcdef", material_ref="ref_0123456789abcdef",
+                state="ready", execution_backend="rust")
+
         def generate(self, shape):
             state["shapes"].append(shape)
             state["events"].append(("generate", None))
@@ -104,3 +110,11 @@ def transport():
 
     state.update(session_factory=Session, client_factory=Client)
     return state
+
+
+def preparation_frame():
+    ident = "prep_0123456789abcdef"
+    return dict(preparation_id=ident, state="ready", status_url="/v1/materials/preparations/"+ident,
+        retry_after_ms=0, preparation_expires_at="2099-01-01T00:00:00Z",
+        material_ref="ref_0123456789abcdef", material_expires_at="2099-01-01T00:00:00Z",
+        ready_until="2099-01-01T00:00:00Z", execution_backend="rust", error=None)

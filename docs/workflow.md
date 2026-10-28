@@ -1,17 +1,17 @@
 # Optional Python workflow reference
 
+Managed public header generation is the default. Use `examples.managed` or call
+the SDK directly with source_url, profile and request. Omit material on every
+call. See the [README](../README.md).
 
-The additive preparation API is available. These examples use SDK 2.0.0 to
-prepare and wait before starting a workload. Legacy generation remains available;
-mandatory preparation is not enabled. A 30-day migration window and cutoff will be
-announced separately; no cutoff date is set. Rust-only enforcement remains gated
-on complete-output readiness and the announced migration.
+The workflow below is an advanced explicit-material example. It deliberately
+collects and prepares chosen sources; it is not required for automatic selection.
 
 An optional Python helper for client-owned material collection and `POST /v1/shape`.
 Your client supplies complete protection JavaScript, profile inputs appropriate to
 its flow, cookies when needed, and the exact application request context. RayonAPI
 returns request headers or form telemetry; your client sends the application request.
-RayonAPI never fetches target pages or scripts and returns no target cookies.
+Registered public material is maintained by Rayon. This explicit helper fetches its chosen URLs; generation does not fetch missing dependencies or return target cookies.
 
 If you already have an HTTP/browser integration, call the
 [Python SDK](https://github.com/Rayon-API/rayon-sdk-py) directly with material from
@@ -34,7 +34,7 @@ python -m pip install -r requirements.txt
 mkdir -p local
 ```
 
-Dependencies are `rayon-sdk-py>=2.0.0,<3` and `curl_cffi`.
+Dependencies are `rayon-sdk-py>=2.1.0,<3` and `curl_cffi`.
 Set `RAYON_API_KEY` in your environment before generation.
 The `local/` directory is ignored by Git; keep keys, cookies, bodies, and headers there.
 
@@ -247,8 +247,8 @@ Tests use local transport doubles and real cookie jars; they never contact targe
 
 Every live mode calls `prepare_and_wait` once with the complete script sources,
 profile, exact request, source-document cookies, and mode/form context before
-starting generation. A ready result confirms complete validation/publication and
-`execution_backend: "rust"`. Partial material or partial output fails preparation;
+starting generation. A ready result confirms validation/publication and
+`execution_backend: "rust"`. Usable validated defaulted mappings can be ready; required output validation still applies;
 a downloaded script or source reference alone does not make a workload ready.
 
 `--prepare-only` returns safe preparation metadata without generating or sending.

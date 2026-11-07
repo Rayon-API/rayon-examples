@@ -13,9 +13,8 @@ its flow, cookies when needed, and the exact application request context. RayonA
 returns request headers or form telemetry; your client sends the application request.
 Registered public material is maintained by Rayon. This explicit helper fetches its chosen URLs; generation does not fetch missing dependencies or return target cookies.
 
-If you already have an HTTP/browser integration, call the
-[Python SDK](https://github.com/Rayon-API/rayon-sdk-py) directly with material from
-that session and send the result through that same integration. No browser collector
+If you already have an HTTP/browser integration, prepare the material from
+that session with the [Python SDK](https://github.com/Rayon-API/rayon-sdk-py) and send the result through that same integration. No browser collector
 or profile generator is required by this repository. The helper below chooses
 `curl_cffi` for its target transport; use it when that fits your session.
 
@@ -34,7 +33,7 @@ python -m pip install -r requirements.txt
 mkdir -p local
 ```
 
-Dependencies are `rayon-sdk-py>=2.1.0,<3` and `curl_cffi`.
+Dependencies are `rayon-sdk-py>=3.0.0rc1,<4` and `curl_cffi`.
 Set `RAYON_API_KEY` in your environment before generation.
 The `local/` directory is ignored by Git; keep keys, cookies, bodies, and headers there.
 
@@ -247,8 +246,7 @@ Tests use local transport doubles and real cookie jars; they never contact targe
 
 Every live mode calls `prepare_and_wait` once with the complete script sources,
 profile, exact request, source-document cookies, and mode/form context before
-starting generation. A ready result confirms validation/publication and
-`execution_backend: "rust"`. Usable validated defaulted mappings can be ready; required output validation still applies;
+starting generation. A `state: ready` result confirms complete validation and publication;
 a downloaded script or source reference alone does not make a workload ready.
 
 `--prepare-only` returns safe preparation metadata without generating or sending.

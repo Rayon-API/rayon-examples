@@ -7,7 +7,7 @@ Your client keeps control of the target HTTP request and session.
 ## Managed generation
 
 ```sh
-python -m pip install 'rayon-sdk-py>=2.1.0,<3'
+python -m pip install 'rayon-sdk-py>=3.0.0rc1,<4'
 ```
 
 ```python

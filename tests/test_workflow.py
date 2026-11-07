@@ -157,7 +157,7 @@ def test_published_sdk_receives_complete_material_only_contract(
     from curl_cffi.requests import Session
     from rayon_sdk_py import Client, __version__
 
-    assert __version__.split(".")[0] == "2"
+    assert __version__.split(".")[0] == "3"
     monkeypatch.setenv("RAYON_API_KEY", "rayon-key")
     api_calls = []
     headers = {f"X-Example-{suffix}": "sample" for suffix in "abcdfz"}

@@ -33,7 +33,7 @@ python -m pip install -r requirements.txt
 mkdir -p local
 ```
 
-Dependencies are `rayon-sdk-py>=3.0.0rc1,<4` and `curl_cffi`.
+Dependencies are `rayon-sdk-py>=3.0.0,<4` and `curl_cffi`.
 Set `RAYON_API_KEY` in your environment before generation.
 The `local/` directory is ignored by Git; keep keys, cookies, bodies, and headers there.
 
